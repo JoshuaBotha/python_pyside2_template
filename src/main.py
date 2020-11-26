@@ -1,23 +1,28 @@
+import copy
+import copy
+import logging
 import sys
 import time
+# import multiprocessing as mp
+from enum import IntEnum, auto
 from typing import Callable, Union, List
-import copy
 
 from PySide2.QtCore import QRunnable, QThreadPool, QObject, Signal, \
-    Slot, QEvent, QProcess
+    Slot, QEvent
 from PySide2.QtUiTools import QUiLoader
 from PySide2.QtWidgets import QApplication, QMainWindow, QProgressBar, \
     QMessageBox as MsgB
-# import multiprocessing as mp
-from enum import IntEnum, auto
 
 import file_manager as fm
 import processes as prcs
+
 # from processes import ProcessTask, ProcessTaskResult
 
 loader = QUiLoader()
 
 APP_NAME = 'Example App'
+
+logger = logging.getLogger(__name__)
 
 
 class ProgressCmd(IntEnum):
@@ -75,7 +80,8 @@ class BoundThread(QRunnable):
                 if self.force_stop:
                     break
         except Exception as e:
-            self.signals.error.emit(e)
+            error = (e, e.args)
+            self.signals.error.emit(error)
         else:
             self.signals.result.emit(result)
         finally:
@@ -130,7 +136,8 @@ class FunctionThread(QRunnable):
                                get_force_stop=self.get_force_stop, **kwargs)
 
         except Exception as e:
-            self.signals.error.emit(e)
+            error = (e, e.args)
+            self.signals.error.emit(error)
         else:
             self.signals.result.emit(result)
         finally:
@@ -175,7 +182,7 @@ class ProcessThreadSignals(QObject):
     result = Signal(object)
     progress = Signal([int], [int, int])
     status_update = Signal([int], [int, str])
-    error = Signal(str)
+    error = Signal(tuple)
     test = Signal(str)
 
 
@@ -279,7 +286,7 @@ class ProcessThread(QRunnable):
                         proc.close()
 
                 result = self.result_queue.get(timeout=1)
-                if result is self.result_queue.em
+                # if result is self.result_queue.em
 
             # process_done = False
             # while self.process.is_alive():
@@ -294,8 +301,10 @@ class ProcessThread(QRunnable):
             #         process_done = True
             #     elif type(process_result) is Exception:
             #         raise process_result
-        except Exception as e:
-            self.signals.error.emit(e)
+        except Exception as err:
+            pass
+            # error = (e, e.args)
+            # self.signals.error.emit(error)
         else:
             self.signals.result.emit(self.tasks)
         finally:
@@ -462,11 +471,12 @@ class MainWindow(QMainWindow):
     def thread_result(self, result):
         print(result)
 
-    @Slot(str)
-    def thread_error(self, error_message: str):
-        print(error_message)
+    @Slot(tuple)
+    def thread_error(self, error: tuple):
+        exception, args = error
+        logger.error(exception, exc_info=True)
         self.update_progress(ProgressCmd.Complete)
-        self.update_status('Worker failed')
+        self.update_status('Thread error')
 
 
 if __name__ == '__main__':

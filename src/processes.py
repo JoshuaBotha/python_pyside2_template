@@ -1,5 +1,5 @@
-from typing import Union, List
 import multiprocessing as mp
+from typing import List
 from uuid import UUID, uuid1
 
 
@@ -44,9 +44,9 @@ class SingleProcess(mp.Process):
     def __init__(self, task_queue: mp.JoinableQueue,
                  result_queue: mp.JoinableQueue):
         mp.Process.__init__(self)
-        assert type(task_queue) is mp.JoinableQueue, \
+        assert type(task_queue) is mp.queues.JoinableQueue, \
             'task provided not correct type'
-        assert type(result_queue) is mp.JoinableQueue, \
+        assert type(result_queue) is mp.queues.JoinableQueue, \
             'task provided not correct type'
         self.task_queue = task_queue
         self.result_queue = result_queue
@@ -69,3 +69,4 @@ class SingleProcess(mp.Process):
                     self.result_queue.put(process_result)
         except Exception as e:
             self.result_queue.put(e)
+            pass
