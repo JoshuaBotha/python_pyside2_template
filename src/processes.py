@@ -1,10 +1,19 @@
 import multiprocessing as mp
+from queue import Empty
 from typing import List
 from uuid import UUID, uuid1
+from my_logger import setup_logger
+
+
+logger = setup_logger(__name__)
 
 
 def create_queue() -> mp.JoinableQueue:
     return mp.JoinableQueue()
+
+
+def get_empty_queue_exception() -> type:
+    return Empty
 
 
 def get_max_num_processes() -> int:
@@ -59,14 +68,14 @@ class SingleProcess(mp.Process):
                 if task is None:
                     done = True
                     self.task_queue.task_done()
-                    self.result_queue.put(None)
+                    self.result_queue.put(True)
                 else:
                     task_run = getattr(task.obj, task.method_name)
                     task_return = task_run()
                     process_result = ProcessTaskResult(task_uuid=task.uuid,
                                                        task_return=task_return,
-                                                       new_task_obj=task)
+                                                       new_task_obj=task.obj)
                     self.result_queue.put(process_result)
+                    self.task_queue.task_done()
         except Exception as e:
             self.result_queue.put(e)
-            pass

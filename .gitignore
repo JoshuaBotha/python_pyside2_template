@@ -124,3 +124,9 @@ dmypy.json
 .pyre/
 
 .idea/
+
+.DS_Store
+
+log.txt
+
+*.insyncdl

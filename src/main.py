@@ -1,9 +1,7 @@
 import copy
-import copy
 import logging
 import sys
 import time
-# import multiprocessing as mp
 from enum import IntEnum, auto
 from typing import Callable, Union, List
 
@@ -17,12 +15,13 @@ import file_manager as fm
 import processes as prcs
 
 # from processes import ProcessTask, ProcessTaskResult
+from my_logger import setup_logger
 
 loader = QUiLoader()
 
 APP_NAME = 'Example App'
 
-logger = logging.getLogger(__name__)
+logger = setup_logger(__name__)
 
 
 class ProgressCmd(IntEnum):
@@ -48,7 +47,7 @@ class ThreadSignals(QObject):
     result = Signal(object)
     progress = Signal([int], [int, int])
     status_update = Signal([int], [int, str])
-    error = Signal(str)
+    error = Signal(Exception)
     test = Signal(str)
 
 
@@ -62,6 +61,7 @@ class BoundThread(QRunnable):
         self.signals = ThreadSignals()
         self.iterations = iterations
         self.force_stop = False
+        self.is_running = False
 
     @Slot()
     def run(self):
@@ -69,6 +69,7 @@ class BoundThread(QRunnable):
         Your code goes in this function
         """
 
+        self.is_running = True
         try:
             self.signals.status_update[int, str].\
                 emit('Busy with bound thread')
@@ -79,15 +80,15 @@ class BoundThread(QRunnable):
                 self.signals.progress[int].emit(ProgressCmd.Step)
                 if self.force_stop:
                     break
-        except Exception as e:
-            error = (e, e.args)
-            self.signals.error.emit(error)
+        except Exception as exception:
+            self.signals.error.emit(exception)
         else:
             self.signals.result.emit(result)
         finally:
             self.signals.finished.emit(self)
             self.signals.status_update[int].emit(StatusCmd.Reset)
             self.signals.progress[int].emit(ProgressCmd.Complete)
+            self.is_running = False
 
 
 class FunctionThread(QRunnable):
@@ -100,6 +101,7 @@ class FunctionThread(QRunnable):
         self.signals = ThreadSignals()
         self.func = func
         self.force_stop = False
+        self.is_running = False
 
         if func_args is None:
             func_args = []
@@ -118,6 +120,7 @@ class FunctionThread(QRunnable):
         Your code goes in this function
         """
 
+        self.is_running = True
         try:
             func_var_names = self.func.__code__.co_varnames
             result = None
@@ -135,15 +138,15 @@ class FunctionThread(QRunnable):
             result = self.func(*args,
                                get_force_stop=self.get_force_stop, **kwargs)
 
-        except Exception as e:
-            error = (e, e.args)
-            self.signals.error.emit(error)
+        except Exception as exception:
+            self.signals.error.emit(exception)
         else:
             self.signals.result.emit(result)
         finally:
             self.signals.finished.emit(self)
             self.signals.status_update[int].emit(StatusCmd.Reset)
             self.signals.progress[int].emit(ProgressCmd.Complete)
+            self.is_running = False
 
 
 def test_function_thread(iterations, result, *args, signals: ThreadSignals = None,
@@ -169,7 +172,7 @@ def test_function_thread(iterations, result, *args, signals: ThreadSignals = Non
     if progress:
         progress[int].emit(ProgressCmd.Complete)
 
-    print(result)
+    # print(result)
     return result
 
 
@@ -200,47 +203,59 @@ class ProcessThread(QRunnable):
         self.task_queue = prcs.create_queue()
         self.result_queue = prcs.create_queue()
         self.force_stop = False
+        self.is_running = False
 
         if num_processes:
-            assert type(num_processes) is int, 'Provided num_processes is ' \
-                                               'not int'
+            # assert type(num_processes) is int, 'Provided num_processes is ' \
+            #                                    'not int'
+            if type(num_processes) is not int:
+                raise TypeError("Provided num_processes must be of type int")
             self.num_processes = num_processes
         else:
             self.num_processes = prcs.get_max_num_processes()
 
         if not task_buffer_size:
-            task_buffer_size = num_processes
+            task_buffer_size = self.num_processes
         self.task_buffer_size = task_buffer_size
 
         if not signals:
             self.signals = ProcessThreadSignals()
         else:
-            assert type(signals) is ThreadSignals, 'Provided signals wrong ' \
-                                                   'type'
+            # assert type(signals) is ThreadSignals, 'Provided signals wrong ' \
+            #                                        'type'
+            if type(signals) is not ThreadSignals:
+                raise TypeError("Provided signals must be of type "
+                                "ThreadSignals")
             self.signals = signals
 
         self.tasks = []
         if tasks:
             self.add_task(tasks)
-        # self.process = prcs.SingleProcess(task_queue=self.task_queue,
-        #                                   result_queue=self.result_queue)
+        self.results = []
 
     def add_tasks(self, tasks: Union[prcs.ProcessTask,
                                      List[prcs.ProcessTask]]):
         if type(tasks) is not List:
             tasks = [tasks]
-        all_valid = all([type(task) is ProcessTask for task in tasks])
-        assert all_valid, "At least some provided tasks are not correct type"
+        all_valid = all([type(task) is prcs.ProcessTask for task in tasks])
+        # assert all_valid, "At least some provided tasks are not correct type"
+        if not all_valid:
+            raise TypeError("At least some of provided tasks are not of "
+                            "type ProcessTask")
         self.tasks.extend(tasks)
 
     def add_tasks_from_methods(self, objects: Union[object, List[object]],
                                method_name: str):
         if type(objects) is not list:
             objects = [objects]
-        assert type(method_name) is str, 'Method_name is not str'
+        # assert type(method_name) is str, 'Method_name is not str'
+        if type(method_name) is not str:
+            raise TypeError("Provided method_name must be of type str")
 
         all_valid = all([hasattr(obj, method_name) for obj in objects])
-        assert all_valid, 'Some or all objects do not have specified method'
+        # assert all_valid, 'Some or all objects do not have specified method'
+        if not all_valid: raise TypeError("Some or all objects do not have "
+                                          "the specified method")
 
         for obj in objects:
             self.tasks.append(prcs.ProcessTask(obj=obj,
@@ -252,23 +267,31 @@ class ProcessThread(QRunnable):
         Your code goes in this function
         """
 
+        self.is_running = True
+        num_active_processes = 0
         try:
+            self.results = [None]*len(self.tasks)
             self.signals.status_update[int, str]. \
                 emit(StatusCmd.ShowMessage, 'Busy with generic worker')
-            self.signals.progress[int].emit(ProgressCmd.Single)
+            self.signals.progress[int, int].emit(
+                ProgressCmd.SetMax, len(self.tasks))
             num_init_tasks = len(self.tasks)
-            assert num_init_tasks, 'No tasks were provided'
+            task_uuids = [task.uuid for task in self.tasks]
+            # assert num_init_tasks, 'No tasks were provided'
+            if not num_init_tasks: raise TypeError("No tasks were provided")
 
             num_used_processes = self.num_processes
             if num_init_tasks < self.num_processes:
                 num_used_processes = num_init_tasks
+            num_active_processes = 0
             for _ in range(num_used_processes):
                 process = prcs.SingleProcess(task_queue=self.task_queue,
                                              result_queue=self.result_queue)
                 self._processes.append(process)
                 process.start()
+                num_active_processes += 1
 
-            active_task_counter = 0
+            num_task_left = len(self.tasks)
             tasks_todo = copy.copy(self.tasks)
 
             init_num = num_used_processes + self.task_buffer_size
@@ -278,49 +301,68 @@ class ProcessThread(QRunnable):
 
             for _ in range(init_num):
                 self.task_queue.put(tasks_todo.pop(0))
-                active_task_counter += 1
 
-            while len(tasks_todo) and not self.force_stop:
-                if self.force_stop:
-                    for proc in self._processes:
-                        proc.close()
+            while num_task_left and not self.force_stop:
+                try:
+                    result = self.result_queue.get(timeout=1)
+                except prcs.get_empty_queue_exception():
+                    pass
+                else:
+                    if len(tasks_todo):
+                        self.task_queue.put(tasks_todo.pop(0))
 
-                result = self.result_queue.get(timeout=1)
-                # if result is self.result_queue.em
+                    if type(result) is not prcs.ProcessTaskResult:
+                        raise TypeError("Task result is not of type "
+                                        "ProcessTaskResult")
 
-            # process_done = False
-            # while self.process.is_alive():
-            #     if len(self.tasks):
-            #         task = tasks_todo.pop(0)
-            #     else:
-            #         task = None
-            #     self.task_queue.put(task)
-            #     process_result = self.result_queue.get()
-            #     self.result_queue.task_done()
-            #     if process_result is None:
-            #         process_done = True
-            #     elif type(process_result) is Exception:
-            #         raise process_result
-        except Exception as err:
-            pass
-            # error = (e, e.args)
-            # self.signals.error.emit(error)
-        else:
-            self.signals.result.emit(self.tasks)
+                    ind = task_uuids.index(result.task_uuid)
+                    # self.tasks[ind].obj = result.new_task_obj
+                    self.results[ind] = result
+                    self.result_queue.task_done()
+                    num_task_left -= 1
+                    self.signals.progress[int].emit(ProgressCmd.Step)
+
+        except Exception as exception:
+            self.signals.error.emit(exception)
+        # else:
+        #     self.signals.result.emit(self.tasks)
         finally:
+            if self.force_stop:
+                while not self.task_queue.empty():
+                    self.task_queue.get()
+                    self.task_queue.task_done()
+                while not self.result_queue.empty():
+                    self.result_queue.get()
+                    self.result_queue.task_done()
+            if len(self._processes):
+                for _ in range(num_used_processes):
+                    self.task_queue.put(None)
+                for _ in range(num_used_processes):
+                    if self.result_queue.get() is True:
+                        self.result_queue.task_done()
+                        num_active_processes -= 1
+                self.task_queue.close()
+                self.result_queue.close()
+                while any([p.is_alive() for p in self._processes]):
+                    time.sleep(1)
+
+            self.signals.result.emit(self.results)
             self.signals.finished.emit(self)
             self.signals.status_update[int].emit(StatusCmd.Reset)
             self.signals.progress[int].emit(ProgressCmd.Complete)
+            self.is_running = False
 
 
 class Test:
-    def __init__(self, value: int):
+    def __init__(self, iterations: int):
         self.has_run = False
-        self.value = value
+        self.iterations = iterations
 
-    def sqr(self):
+    def run(self):
+        for i in range(self.iterations):
+            result = i * i
         self.has_run = True
-        return self.value * self.value
+        return result
 
 
 class MainWindow(QMainWindow):
@@ -332,8 +374,10 @@ class MainWindow(QMainWindow):
         self.ui.installEventFilter(self)
 
         self.threadpool = QThreadPool()
-        print("Multithreading with maximum "
-              f" {self.threadpool.maxThreadCount()} threads")
+        # print("Multithreading with maximum "
+        #       f" {self.threadpool.maxThreadCount()} threads")
+        logger.info(f"Multithreading with a maximum of "
+                    f"{self.threadpool.maxThreadCount()} threads.")
         self.active_threads = []
 
         self.ui.btnStartBoundThread.pressed.connect(self.start_bound_thread)
@@ -366,8 +410,9 @@ class MainWindow(QMainWindow):
                 for worker in self.active_threads:
                     worker.force_stop = True
                 self.ui.statusBar().showMessage('Waiting for workers to end')
-                while len(self.active_threads) != 0:
-                    time.sleep(0.1)
+                while any([thread.is_running for thread
+                           in self.active_threads]):
+                    time.sleep(1)
             self.ui.removeEventFilter(self)
             app.quit()
 
@@ -419,7 +464,7 @@ class MainWindow(QMainWindow):
         thread.signals.status_update[int, str].connect(
             self.update_status)
         thread.signals.finished.connect(self.thread_finished)
-        thread.signals.result.connect(self.thread_result)
+        thread.signals.result.connect(self.thread_results)
         thread.signals.progress[int].connect(self.update_progress)
         thread.signals.progress[int, int].connect(self.update_progress)
         thread.signals.error.connect(self.thread_error)
@@ -439,42 +484,41 @@ class MainWindow(QMainWindow):
         self.active_threads.append(thread)
 
     def start_single_process_thread(self):
-        prcs_thread = ProcessThread()
+        prcs_thread = ProcessThread(num_processes=1)
         self.setup_worker_signals(thread=prcs_thread)
-
-        # class Test:
-        #     def __init__(self, value: int):
-        #         self.value = value
-        #
-        #     def sqr(self):
-        #         return self.value * self.value
-
-        self.test_list = [Test(i) for i in range(10)]
-        prcs_thread.add_tasks_from_methods(self.test_list, 'sqr')
-        print(f'Before thread start {self.threadpool.activeThreadCount()}')
+        self.test_list = [Test(10000000) for _ in range(4)]
+        prcs_thread.add_tasks_from_methods(self.test_list, 'run')
         self.threadpool.start(prcs_thread)
-        print(f'After thread start {self.threadpool.activeThreadCount()}')
+        self.active_threads.append(prcs_thread)
 
     def start_multiple_process_thread(self):
-        pass
+        prcs_thread = ProcessThread()
+        self.setup_worker_signals(thread=prcs_thread)
+        self.test_list = [Test(10000000) for _ in range(100)]
+        prcs_thread.add_tasks_from_methods(self.test_list, 'run')
+        self.threadpool.start(prcs_thread)
+        self.active_threads.append(prcs_thread)
 
     @Slot(object)
     def thread_finished(self, finished_worker: object):
-        print(f'After thread done: {self.threadpool.activeThreadCount()}')
         for worker in self.active_threads:
             if worker is finished_worker:
                 self.active_threads.remove(worker)
-        if self.threadpool.activeThreadCount():
-            self.update_progress(ProgressCmd.Complete)
+        # if self.threadpool.activeThreadCount():
+        #     self.update_progress(ProgressCmd.Complete)
 
     @Slot()
-    def thread_result(self, result):
-        print(result)
+    def thread_results(self, results):
+        self.test_list = [res.new_task_obj for res in results]
+        print([res.task_return for res in results])
 
-    @Slot(tuple)
-    def thread_error(self, error: tuple):
-        exception, args = error
-        logger.error(exception, exc_info=True)
+
+    @Slot(Exception)
+    def thread_error(self, exception: Exception):
+        try:
+            raise exception
+        except Exception as exc:
+            logger.error('Thread has failed', exc_info=True)
         self.update_progress(ProgressCmd.Complete)
         self.update_status('Thread error')
 
@@ -483,4 +527,8 @@ if __name__ == '__main__':
     app = QApplication(sys.argv)
     window = MainWindow()
     window.ui.show()
+    logger.info("App started and Main Window shown")
     app.exec_()
+    logger.info("Application closed, busy shutting down")
+    sys.exit()
+    logging.shutdown()
