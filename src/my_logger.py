@@ -3,11 +3,27 @@ import sys
 from typing import Union
 
 
-def setup_logger(logger: Union[str, logging.Logger]) -> logging.Logger:
+def setup_logger(logger: Union[str, logging.Logger],
+                 is_main: bool = None) -> logging.Logger:
+
     assert type(logger) in [str, logging.Logger], "Provided logger not "\
-                                                      "correct type"
+                                                  "correct type"
+
+    class StdOutFilter(logging.Filter):
+        def filter(self, record: logging.LogRecord):
+            return record.levelno in (logging.DEBUG,
+                                      logging.INFO, logging.WARNING)
+
+    class StdErrFilter(logging.Filter):
+        def filter(self, record: logging.LogRecord):
+            return record.levelno not in (logging.DEBUG,
+                                          logging.INFO, logging.WARNING)
+
     if type(logger) is str:
         logger = logging.getLogger(logger)
+
+    if is_main:
+        logger.root.handlers = []
 
     line = '-' * 80
     fmt = f'{line}\n\n%(asctime)s    %(threadName)s    ' \
@@ -16,11 +32,7 @@ def setup_logger(logger: Union[str, logging.Logger]) -> logging.Logger:
     cli_err = logging.StreamHandler(stream=sys.stderr)
     cli_err.setLevel(logging.ERROR)
     cli_err.setFormatter(formatter)
-
-    class StdOutFilter(logging.Filter):
-        def filter(self, record: logging.LogRecord):
-            return record.levelno in (logging.DEBUG,
-                                      logging.INFO, logging.WARNING)
+    cli_err.addFilter(StdErrFilter())
 
     cli_out = logging.StreamHandler(stream=sys.stdout)
     cli_out.setLevel(logging.DEBUG)

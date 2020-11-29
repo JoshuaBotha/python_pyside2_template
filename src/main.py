@@ -21,7 +21,7 @@ loader = QUiLoader()
 
 APP_NAME = 'Example App'
 
-logger = setup_logger(__name__)
+logger = setup_logger(__name__, is_main=True)
 
 
 class ProgressCmd(IntEnum):
@@ -45,10 +45,24 @@ class ThreadSignals(QObject):
 
     finished = Signal(object)
     result = Signal(object)
-    progress = Signal([int], [int, int])
-    status_update = Signal([int], [int, str])
+    progress = Signal(int, int)
+    status_update = Signal(int, str)
     error = Signal(Exception)
     test = Signal(str)
+
+
+class ProgressTracker:
+    def __init__(self, num_iterations: int, num_of_trackers: int = 1):
+        self._num_iterations = num_iterations
+        self._num_of_trackers = num_of_trackers
+        self._step_value = 100/num_of_trackers/num_iterations
+        self._current_value = 0.0
+
+    def iterate(self) -> int:
+        prev_value = self._current_value
+        self._current_value += self._step_value
+        diff_mod = self._current_value//1 - prev_value//1
+        return int(diff_mod)
 
 
 class BoundThread(QRunnable):
@@ -71,13 +85,15 @@ class BoundThread(QRunnable):
 
         self.is_running = True
         try:
-            self.signals.status_update[int, str].\
-                emit('Busy with bound thread')
-            self.signals.progress[int, int].emit(
-                ProgressCmd.SetMax, self.iterations)
+            self.signals.status_update.emit(StatusCmd.ShowMessage,
+                                            'Busy with bound thread')
+            self.signals.progress.emit(ProgressCmd.SetMax, 100)
+            prog_tracker = ProgressTracker(num_iterations=self.iterations)
             for i in range(self.iterations):
                 result = i * i
-                self.signals.progress[int].emit(ProgressCmd.Step)
+                prog_value = prog_tracker.iterate()
+                if prog_value:
+                    self.signals.progress.emit(ProgressCmd.Step, prog_value)
                 if self.force_stop:
                     break
         except Exception as exception:
@@ -86,8 +102,8 @@ class BoundThread(QRunnable):
             self.signals.result.emit(result)
         finally:
             self.signals.finished.emit(self)
-            self.signals.status_update[int].emit(StatusCmd.Reset)
-            self.signals.progress[int].emit(ProgressCmd.Complete)
+            self.signals.status_update.emit(StatusCmd.Reset, '')
+            self.signals.progress.emit(ProgressCmd.Complete, 0)
             self.is_running = False
 
 
@@ -123,8 +139,8 @@ class FunctionThread(QRunnable):
         self.is_running = True
         try:
             func_var_names = self.func.__code__.co_varnames
-            result = None
-            args = self.func_args.append(result)
+            # result = None
+            args = self.func_args  #.append(result)
             kwargs = self.func_kwargs
             if 'signals' in func_var_names:
                 kwargs['signals'] = self.signals
@@ -133,8 +149,8 @@ class FunctionThread(QRunnable):
                     kwargs['progress'] = self.signals.progress
                 if 'status_update' in func_var_names:
                     kwargs['status_update'] = self.signals.status_update
-            self.signals.status_update[int, str].\
-                emit('Busy with function thread')
+            self.signals.status_update.emit(StatusCmd.ShowMessage,
+                                            'Busy with function thread')
             result = self.func(*args,
                                get_force_stop=self.get_force_stop, **kwargs)
 
@@ -144,12 +160,12 @@ class FunctionThread(QRunnable):
             self.signals.result.emit(result)
         finally:
             self.signals.finished.emit(self)
-            self.signals.status_update[int].emit(StatusCmd.Reset)
-            self.signals.progress[int].emit(ProgressCmd.Complete)
+            self.signals.status_update.emit(StatusCmd.Reset, '')
+            self.signals.progress.emit(ProgressCmd.Complete, 0)
             self.is_running = False
 
 
-def test_function_thread(iterations, result, *args, signals: ThreadSignals = None,
+def test_function_thread(iterations, *args, signals: ThreadSignals = None,
                          get_force_stop: Callable = None, **kwargs):
     progress = None
     if signals:
@@ -160,19 +176,22 @@ def test_function_thread(iterations, result, *args, signals: ThreadSignals = Non
                 progress = value
 
     if progress:
-        progress[int, int].emit(ProgressCmd.SetMax, iterations)
+        progress.emit(ProgressCmd.SetMax, 100)
+        prog_tracker = ProgressTracker(num_iterations=iterations)
 
+    result = int()
     for i in range(iterations):
         result = i * i
         if progress:
-            progress[int].emit(ProgressCmd.Step)
-        if get_force_stop:
+            prog_value = prog_tracker.iterate()
+            if prog_value:
+                progress.emit(ProgressCmd.Step, prog_value)
+        if get_force_stop():
             break
 
     if progress:
-        progress[int].emit(ProgressCmd.Complete)
+        progress.emit(ProgressCmd.Complete, 0)
 
-    # print(result)
     return result
 
 
@@ -183,8 +202,8 @@ class ProcessThreadSignals(QObject):
 
     finished = Signal(object)
     result = Signal(object)
-    progress = Signal([int], [int, int])
-    status_update = Signal([int], [int, str])
+    progress = Signal(int, int)
+    status_update = Signal(int, str)
     error = Signal(tuple)
     test = Signal(str)
 
@@ -271,10 +290,10 @@ class ProcessThread(QRunnable):
         num_active_processes = 0
         try:
             self.results = [None]*len(self.tasks)
-            self.signals.status_update[int, str]. \
-                emit(StatusCmd.ShowMessage, 'Busy with generic worker')
-            self.signals.progress[int, int].emit(
-                ProgressCmd.SetMax, len(self.tasks))
+            self.signals.status_update.emit(StatusCmd.ShowMessage,
+                                            'Busy with generic worker')
+            prog_tracker = ProgressTracker(len(self.tasks))
+            self.signals.progress.emit(ProgressCmd.SetMax, 100)
             num_init_tasks = len(self.tasks)
             task_uuids = [task.uuid for task in self.tasks]
             # assert num_init_tasks, 'No tasks were provided'
@@ -297,7 +316,7 @@ class ProcessThread(QRunnable):
             init_num = num_used_processes + self.task_buffer_size
             rest = len(tasks_todo) - init_num
             if rest < 0:
-                init_num = num_used_processes - rest
+                init_num += rest
 
             for _ in range(init_num):
                 self.task_queue.put(tasks_todo.pop(0))
@@ -320,7 +339,10 @@ class ProcessThread(QRunnable):
                     self.results[ind] = result
                     self.result_queue.task_done()
                     num_task_left -= 1
-                    self.signals.progress[int].emit(ProgressCmd.Step)
+                    prog_value = prog_tracker.iterate()
+                    if prog_value:
+                        self.signals.progress.emit(ProgressCmd.Step,
+                                                   prog_value)
 
         except Exception as exception:
             self.signals.error.emit(exception)
@@ -348,8 +370,8 @@ class ProcessThread(QRunnable):
 
             self.signals.result.emit(self.results)
             self.signals.finished.emit(self)
-            self.signals.status_update[int].emit(StatusCmd.Reset)
-            self.signals.progress[int].emit(ProgressCmd.Complete)
+            self.signals.status_update.emit(StatusCmd.Reset, '')
+            self.signals.progress.emit(ProgressCmd.Complete, 0)
             self.is_running = False
 
 
@@ -374,8 +396,6 @@ class MainWindow(QMainWindow):
         self.ui.installEventFilter(self)
 
         self.threadpool = QThreadPool()
-        # print("Multithreading with maximum "
-        #       f" {self.threadpool.maxThreadCount()} threads")
         logger.info(f"Multithreading with a maximum of "
                     f"{self.threadpool.maxThreadCount()} threads.")
         self.active_threads = []
@@ -410,67 +430,77 @@ class MainWindow(QMainWindow):
                 for worker in self.active_threads:
                     worker.force_stop = True
                 self.ui.statusBar().showMessage('Waiting for workers to end')
+                self.ui.statusBar().repaint()
                 while any([thread.is_running for thread
                            in self.active_threads]):
-                    time.sleep(1)
+                    time.sleep(0.1)
             self.ui.removeEventFilter(self)
             app.quit()
 
     @Slot(int)
     @Slot(int, str)
     def update_status(self, cmd: StatusCmd, new_status: str = None):
+        if type(cmd) is int:
+            cmd = StatusCmd(cmd)
+
         if cmd is StatusCmd.Reset:
             self.ui.statusBar().clearMessage()
         if cmd is StatusCmd.ShowMessage:
             if new_status is None:
                 new_status = ''
             self.ui.statusBar().showMessage(new_status)
+
         self.ui.statusBar().repaint()
         self.repaint()
 
-    @Slot(int)
+    # @Slot(int)
     @Slot(int, int)
     def update_progress(self, cmd: ProgressCmd, value: int = None):
-        if cmd is not self._current_progress_state:
-            if cmd is ProgressCmd.Complete:
-                self.ui.progressBar.setMaximum(0)
-                self.ui.progressBar.setVisible(False)
-            if cmd is ProgressCmd.SetMax:
-                self.ui.progressBar.setMaximum(value)
-                self.ui.progressBar.setVisible(True)
-            if cmd is ProgressCmd.AddMax:
-                current_max = self.ui.progressBar.maximum()
-                self.ui.progressBar.setMaximum(current_max + value)
-                self.ui.progressBar.setVisible(True)
-            if cmd is ProgressCmd.Step:
-                current_value = self.ui.progressBar.value()
-                self.ui.progressBar.setValue(current_value + 1)
-            if cmd is ProgressCmd.SetValue:
-                self.ui.progressBar.setValue(value)
-            if cmd is ProgressCmd.Single:
-                self.ui.progressBar.setMaximum(0)
-                self.ui.progressBar.setValue(0)
-                self.ui.progressBar.setVisible(True)
+        if type(cmd) is int:
+            cmd = ProgressCmd(cmd)
 
-            self.ui.progressBar.repaint()
-            self.repaint()
+        if cmd is ProgressCmd.Complete:
+            self.ui.progressBar.setMaximum(0)
+            self.ui.progressBar.setVisible(False)
+        elif cmd is ProgressCmd.SetMax:
+            self.ui.progressBar.setValue(0)
+            self.ui.progressBar.setMaximum(value)
+            self.ui.progressBar.setVisible(True)
+        elif cmd is ProgressCmd.AddMax:
+            current_max = self.ui.progressBar.maximum()
+            self.ui.progressBar.setMaximum(current_max + value)
+            self.ui.progressBar.setVisible(True)
+        elif cmd is ProgressCmd.Step:
+            current_value = self.ui.progressBar.value()
+            self.ui.progressBar.setValue(current_value + value)
+        elif cmd is ProgressCmd.SetValue:
+            self.ui.progressBar.setValue(value)
+        elif cmd is ProgressCmd.Single:
+            self.ui.progressBar.setMaximum(0)
+            self.ui.progressBar.setValue(0)
+            self.ui.progressBar.setVisible(True)
 
-            self._current_progress_state = cmd
+        self.ui.progressBar.repaint()
+        # self.repaint()
+        # QApplication.processEvents()
+
+        # self._current_progress_state = cmd
 
     def setup_worker_signals(self, thread: Union[BoundThread,
                                                  FunctionThread,
-                                                 List[FunctionThread]]):
-        thread.signals.status_update[int].connect(self.update_status)
-        thread.signals.status_update[int, str].connect(
-            self.update_status)
+                                                 List[FunctionThread]],
+                             is_process_thread: bool = None):
+        thread.signals.status_update.connect(self.update_status)
         thread.signals.finished.connect(self.thread_finished)
-        thread.signals.result.connect(self.thread_results)
-        thread.signals.progress[int].connect(self.update_progress)
-        thread.signals.progress[int, int].connect(self.update_progress)
+        if not is_process_thread:
+            thread.signals.result.connect(self.thread_results)
+        else:
+            thread.signals.result.connect(self.process_thread_results)
+        thread.signals.progress.connect(self.update_progress)
         thread.signals.error.connect(self.thread_error)
 
     def start_bound_thread(self):
-        thread = BoundThread(iterations=100000)
+        thread = BoundThread(iterations=1000000)
         self.setup_worker_signals(thread=thread)
         self.threadpool.start(thread)
         self.active_threads.append(thread)
@@ -486,16 +516,16 @@ class MainWindow(QMainWindow):
     def start_single_process_thread(self):
         prcs_thread = ProcessThread(num_processes=1)
         self.setup_worker_signals(thread=prcs_thread)
-        self.test_list = [Test(10000000) for _ in range(4)]
-        prcs_thread.add_tasks_from_methods(self.test_list, 'run')
+        self.process_test = [Test(10000000) for _ in range(4)]
+        prcs_thread.add_tasks_from_methods(self.process_test, 'run')
         self.threadpool.start(prcs_thread)
         self.active_threads.append(prcs_thread)
 
     def start_multiple_process_thread(self):
         prcs_thread = ProcessThread()
-        self.setup_worker_signals(thread=prcs_thread)
-        self.test_list = [Test(10000000) for _ in range(100)]
-        prcs_thread.add_tasks_from_methods(self.test_list, 'run')
+        self.setup_worker_signals(thread=prcs_thread, is_process_thread=True)
+        self.process_test = [Test(10000000) for _ in range(20)]
+        prcs_thread.add_tasks_from_methods(self.process_test, 'run')
         self.threadpool.start(prcs_thread)
         self.active_threads.append(prcs_thread)
 
@@ -505,13 +535,18 @@ class MainWindow(QMainWindow):
             if worker is finished_worker:
                 self.active_threads.remove(worker)
         # if self.threadpool.activeThreadCount():
-        #     self.update_progress(ProgressCmd.Complete)
+        self.update_progress(ProgressCmd.Complete)
+        self.update_status(StatusCmd.Reset)
 
     @Slot()
-    def thread_results(self, results):
-        self.test_list = [res.new_task_obj for res in results]
-        print([res.task_return for res in results])
+    def thread_results(self, result):
+        logger.info(f"Thread result: {result}")
 
+    @Slot()
+    def process_thread_results(self, task_results: prcs.ProcessTaskResult):
+        self.process_test = [res.new_task_obj for res in task_results]
+        results = [res.task_return for res in task_results]
+        logger.info(f"{len(results)} Process thread  results: {results}")
 
     @Slot(Exception)
     def thread_error(self, exception: Exception):
@@ -530,5 +565,5 @@ if __name__ == '__main__':
     logger.info("App started and Main Window shown")
     app.exec_()
     logger.info("Application closed, busy shutting down")
-    sys.exit()
     logging.shutdown()
+    sys.exit()
